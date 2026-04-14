@@ -1,0 +1,39 @@
+# Core ML
+torch==2.2.0
+numpy==1.26.4
+pandas==2.2.0
+scikit-learn==1.4.0
+
+# Embeddings
+sentence-transformers==2.6.1
+
+# Retrieval
+faiss-cpu==1.8.0
+
+# Experiment tracking
+mlflow==2.11.0
+
+# Config management
+pyyaml==6.0.1
+omegaconf==2.3.0
+
+# API serving
+fastapi==0.110.0
+uvicorn==0.29.0
+pydantic==2.6.0
+
+# Data download + utilities
+requests==2.31.0
+tqdm==4.66.2
+zipfile36==0.1.3
+
+# Visualisation (for EDA and MLflow artifacts)
+matplotlib==3.8.3
+seaborn==0.13.2
+
+# Explainability
+shap==0.45.0
+
+# Testing
+pytest==8.1.0
+httpx==0.27.0

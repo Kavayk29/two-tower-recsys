@@ -1,0 +1,30 @@
+# Virtual environment
+venv/
+
+# Data (too large for git)
+data/raw/
+data/processed/
+
+# MLflow experiments (hosted on DagsHub separately)
+experiments/
+
+# Saved models and indices
+artifacts/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# VS Code settings
+.vscode/
+
+# OS files
+.DS_Store
