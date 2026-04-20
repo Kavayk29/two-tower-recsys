@@ -23,7 +23,7 @@ model:
 
 training:
   batch_size: 512
-  epochs: 20
+  epochs: 30
   learning_rate: 0.001
   weight_decay: 1e-5
   num_workers: 0
@@ -36,7 +36,7 @@ retrieval:
 
 mlflow:
   experiment_name: "two-tower-recsys"
-  tracking_uri: "mlruns"
+  tracking_uri: "https://dagshub.com/Kavayk29/two-tower-recsys.mlflow"
 
 serving:
   host: "0.0.0.0"
