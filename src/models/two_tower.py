@@ -1,67 +1,82 @@
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
+from typing import List, Optional
 from src.models.user_tower import UserTower
 from src.models.item_tower import ItemTower
 
+
 class TwoTowerModel(nn.Module):
+    """
+    Two-tower model combining:
+    - UserTower with self-attention over watch history
+    - ItemTower with MLP over item features
+    - In-batch softmax loss with logQ correction
+    """
+
     def __init__(
-        self, 
-        num_items, 
-        num_users, 
-        num_genders, 
-        num_ages, 
-        num_occupations, 
-        num_genres, 
-        embedding_dim,
-        user_hidden_dims,
-        item_hidden_dims,
-        text_embed_dim=384,
-        transformer_heads=4,
-        transformer_layers=2
+        self,
+        history_embed_dim: int,
+        scalar_feature_dim: int,
+        item_input_dim: int,
+        hidden_dims: List[int],
+        embedding_dim: int,
+        num_attention_heads: int = 4,
+        dropout: float = 0.2,
+        temperature: float = 0.07,
+        logq_correction: bool = True
     ):
         super().__init__()
 
-        # shared embedding
-        self.item_embedding = nn.Embedding(
-            num_items + 1,
-            embedding_dim,
-            padding_idx=0
-        )
+        self.temperature = temperature
+        self.logq_correction = logq_correction
+        self.embedding_dim = embedding_dim
 
         self.user_tower = UserTower(
-            self.item_embedding, 
-            num_users, num_genders, num_ages, num_occupations, 
-            embedding_dim, user_hidden_dims,
-            transformer_heads=transformer_heads,
-            transformer_layers=transformer_layers
+            history_embed_dim=history_embed_dim,
+            scalar_feature_dim=scalar_feature_dim,
+            hidden_dims=hidden_dims,
+            embedding_dim=embedding_dim,
+            num_attention_heads=num_attention_heads,
+            dropout=dropout
         )
-        
+
         self.item_tower = ItemTower(
-            self.item_embedding, 
-            num_genres, 
-            embedding_dim, item_hidden_dims, text_embed_dim
+            input_dim=item_input_dim,
+            hidden_dims=hidden_dims,
+            embedding_dim=embedding_dim,
+            dropout=dropout
         )
 
-    def forward(self, user_features, item_features):
-        """
-        user_features: dict containing 'user_id', 'gender', 'age', 'occupation', 'history'
-        item_features: dict containing 'item_id', 'title_emb', 'genres'
-        """
-        user_vec = self.user_tower(
-            user_features["user_id"],
-            user_features["gender"],
-            user_features["age"],
-            user_features["occupation"],
-            user_features["history"]
-        )   # (B, D)
-        
-        item_vec = self.item_tower(
-            item_features["item_id"],
-            item_features["title_emb"],
-            item_features["genres"]
-        )    # (B, D)
+    def forward(
+        self,
+        history_embeddings: torch.Tensor,
+        scalar_features: torch.Tensor,
+        item_features: torch.Tensor,
+        item_sampling_probs: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        user_embeddings = self.user_tower(history_embeddings, scalar_features)
+        item_embeddings = self.item_tower(item_features)
 
-        logits = torch.matmul(user_vec, item_vec.T)  # (B, B)
+        logits = torch.matmul(user_embeddings, item_embeddings.T) / self.temperature
 
-        return logits
+        if self.logq_correction and item_sampling_probs is not None:
+            log_probs = torch.log(item_sampling_probs.clamp(min=1e-9))
+            logits = logits - log_probs.unsqueeze(0)
+
+        labels = torch.arange(logits.size(0), device=logits.device)
+        return F.cross_entropy(logits, labels)
+
+    def get_user_embedding(
+        self,
+        history_embeddings: torch.Tensor,
+        scalar_features: torch.Tensor
+    ) -> torch.Tensor:
+        self.eval()
+        with torch.no_grad():
+            return self.user_tower(history_embeddings, scalar_features)
+
+    def get_item_embedding(self, item_features: torch.Tensor) -> torch.Tensor:
+        self.eval()
+        with torch.no_grad():
+            return self.item_tower(item_features)

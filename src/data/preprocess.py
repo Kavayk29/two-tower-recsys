@@ -1,69 +1,162 @@
-import torch
 import pandas as pd
-import json
+import numpy as np
+from pathlib import Path
+import yaml
 
-def load_ratings(path: str) -> pd.DataFrame:
-    df = pd.read_csv(path, sep="::", engine="python", header=None, names=["user_id", "item_id", "rating", "timestamp"])
-    return df
 
-def filter_data(df: pd.DataFrame, min_rating: float, min_interactions: int):
-    df = df[df["rating"] >= min_rating].copy()
-    user_counts = df["user_id"].value_counts()
-    valid_users = user_counts[user_counts >= min_interactions].index
-    df = df[df["user_id"].isin(valid_users)]
-    return df
+def load_config(config_path: str = "configs/config.yaml") -> dict:
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
 
-def sort_by_time(df: pd.DataFrame):
-    return df.sort_values(["user_id", "timestamp"])
 
-def split_by_user_time(df, val_frac=0.1, test_frac=0.1):
-    train_rows = []
-    val_rows = []
-    test_rows = []
+def load_ratings(raw_dir: Path) -> pd.DataFrame:
+    ratings = pd.read_csv(
+        raw_dir / "ratings.dat",
+        sep="::",
+        engine="python",
+        names=["userId", "movieId", "rating", "timestamp"],
+        dtype={"userId": np.int32, "movieId": np.int32, "rating": np.float32}
+    )
+    ratings["timestamp"] = pd.to_datetime(ratings["timestamp"], unit="s")
+    print(f"Ratings loaded: {len(ratings):,} rows")
+    return ratings
 
-    for user_id, user_df in df.groupby("user_id"):
-        user_df = user_df.sort_values("timestamp")
-        n = len(user_df)
-        test_size = int(n * test_frac)
-        val_size = int(n * val_frac)
-        train_end = n - val_size - test_size
-        val_end = n - test_size
 
-        train_rows.append(user_df.iloc[:train_end])
-        val_rows.append(user_df.iloc[train_end:val_end])
-        test_rows.append(user_df.iloc[val_end:])
+def load_users(raw_dir: Path) -> pd.DataFrame:
+    """
+    Load explicit user profiles.
+    Columns: userId, gender, age, occupation, zip_code
+    Age is bucketed: 1=under18, 18, 25, 35, 45, 50, 56
+    Occupation: 0-20 integer codes
+    """
+    users = pd.read_csv(
+        raw_dir / "users.dat",
+        sep="::",
+        engine="python",
+        names=["userId", "gender", "age", "occupation", "zip_code"],
+        dtype={"userId": np.int32, "age": np.int32, "occupation": np.int32}
+    )
+    # Encode gender: M=1, F=0
+    users["gender_encoded"] = (users["gender"] == "M").astype(np.float32)
+    # Normalise age bucket (max bucket is 56)
+    users["age_norm"] = (users["age"] / 56.0).astype(np.float32)
+    # Normalise occupation (21 categories, 0-20)
+    users["occupation_norm"] = (users["occupation"] / 20.0).astype(np.float32)
+    users = users.drop(columns=["gender", "zip_code"])
+    print(f"Users loaded: {len(users):,} rows")
+    return users
 
-    train_df = pd.concat(train_rows)
-    val_df = pd.concat(val_rows)
-    test_df = pd.concat(test_rows)
 
-    return train_df, val_df, test_df
+def load_movies(raw_dir: Path) -> pd.DataFrame:
+    movies = pd.read_csv(
+        raw_dir / "movies.dat",
+        sep="::",
+        engine="python",
+        names=["movieId", "title", "genres"],
+        encoding="latin-1",
+        dtype={"movieId": np.int32}
+    )
+    movies["year"] = movies["title"].str.extract(r"\((\d{4})\)").astype(float)
+    movies["title_clean"] = movies["title"].str.replace(
+        r"\s*\(\d{4}\)", "", regex=True
+    ).str.strip()
+    print(f"Movies loaded: {len(movies):,} rows")
+    return movies
 
-def build_sequences(df, max_history_len=50):
-    sequences = []
-    for user_id, user_df in df.groupby("user_id"):
-        items = user_df["item_id"].tolist()
-        for i in range(1, len(items)):
-            history = items[max(0, i - max_history_len):i]
-            target = items[i]
-            sequences.append({
-                "user_id": int(user_id),
-                "history": [int(x) for x in history],
-                "target": int(target)
-            })
-    return sequences
 
-def build_eval_data(train_df, eval_df, max_history_len=50):
-    eval_data = []
-    train_histories = train_df.groupby("user_id")["item_id"].apply(list)
-    for user_id, user_df in eval_df.groupby("user_id"):
-        if user_id not in train_histories:
-            continue
-        history = train_histories[user_id][-max_history_len:]
-        target = user_df["item_id"].iloc[0]
-        eval_data.append({
-            "user_id": int(user_id),
-            "history": [int(x) for x in history],
-            "target": int(target)
-        })
-    return eval_data
+def filter_interactions(
+    ratings: pd.DataFrame, min_rating: float, min_interactions: int
+) -> pd.DataFrame:
+    positive = ratings[ratings["rating"] >= min_rating].copy()
+    print(f"After rating filter (>={min_rating}): {len(positive):,} rows")
+
+    user_counts = positive.groupby("userId").size()
+    active_users = user_counts[user_counts >= min_interactions].index
+    positive = positive[positive["userId"].isin(active_users)].copy()
+    print(f"After min_interactions filter: {len(positive):,} rows")
+    print(f"Unique users: {positive['userId'].nunique():,}")
+    print(f"Unique movies: {positive['movieId'].nunique():,}")
+    return positive
+
+
+def temporal_split(
+    interactions: pd.DataFrame, val_frac: float, test_frac: float
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    user_last = interactions.groupby("userId")["timestamp"].max()
+    test_cutoff = user_last.quantile(1.0 - test_frac)
+    val_cutoff = user_last.quantile(1.0 - test_frac - val_frac)
+
+    print(f"\nTemporal split cutoffs:")
+    print(f"  Val cutoff:  {val_cutoff}")
+    print(f"  Test cutoff: {test_cutoff}")
+
+    test_users = user_last[user_last >= test_cutoff].index
+    val_users = user_last[
+        (user_last >= val_cutoff) & (user_last < test_cutoff)
+    ].index
+    train_users = user_last[user_last < val_cutoff].index
+
+    train = interactions[interactions["userId"].isin(train_users)].copy()
+    val = interactions[interactions["userId"].isin(val_users)].copy()
+    test = interactions[interactions["userId"].isin(test_users)].copy()
+
+    print(f"\nSplit sizes:")
+    print(f"  Train: {len(train):,} interactions, {train['userId'].nunique():,} users")
+    print(f"  Val:   {len(val):,} interactions, {val['userId'].nunique():,} users")
+    print(f"  Test:  {len(test):,} interactions, {test['userId'].nunique():,} users")
+    return train, val, test
+
+
+def cap_samples_per_user(
+    interactions: pd.DataFrame, max_samples: int = 50
+) -> pd.DataFrame:
+    capped = (
+        interactions
+        .sort_values("timestamp")
+        .groupby("userId")
+        .tail(max_samples)
+    )
+    print(f"After capping at {max_samples} samples/user: {len(capped):,} rows")
+    return capped.reset_index(drop=True)
+
+
+def run_preprocessing(config_path: str = "configs/config.yaml") -> None:
+    config = load_config(config_path)
+    raw_dir = Path(config["data"]["raw_dir"])
+    processed_dir = Path(config["data"]["processed_dir"])
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    ratings = load_ratings(raw_dir)
+    users = load_users(raw_dir)
+    movies = load_movies(raw_dir)
+
+    movies.to_parquet(processed_dir / "movies.parquet", index=False)
+    users.to_parquet(processed_dir / "users.parquet", index=False)
+    print("Saved movies.parquet and users.parquet")
+
+    interactions = filter_interactions(
+        ratings,
+        min_rating=config["data"]["min_rating"],
+        min_interactions=config["data"]["min_interactions"]
+    )
+
+    train, val, test = temporal_split(
+        interactions,
+        val_frac=config["data"]["val_frac"],
+        test_frac=config["data"]["test_frac"]
+    )
+
+    train = cap_samples_per_user(
+        train, max_samples=config["data"]["max_samples_per_user"]
+    )
+
+    train.to_parquet(processed_dir / "train_interactions.parquet", index=False)
+    val.to_parquet(processed_dir / "val_interactions.parquet", index=False)
+    test.to_parquet(processed_dir / "test_interactions.parquet", index=False)
+
+    print(f"\nAll files saved to {processed_dir}/")
+    print("Preprocessing complete.")
+
+
+if __name__ == "__main__":
+    run_preprocessing()

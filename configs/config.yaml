@@ -1,44 +1,44 @@
 data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
-  min_interactions: 5        # drop users with fewer than this many ratings
-  min_rating: 4.0            # threshold for treating a rating as positive
-  test_frac: 0.1             # last 10% of timeline → test
-  val_frac: 0.1              # preceding 10% → validation
+  min_interactions: 5
+  min_rating: 4.0
+  test_frac: 0.1
+  val_frac: 0.1
+  max_samples_per_user: 50
 
 features:
   text_embed_model: "sentence-transformers/all-MiniLM-L6-v2"
   text_embed_dim: 384
-  num_genres: 20
-  max_history_len: 50        # max items in user watch history
+  max_history_len: 50
 
 model:
   embedding_dim: 128
   user_hidden_dims: [256, 128]
   item_hidden_dims: [256, 128]
-  transformer_heads: 4
-  transformer_layers: 2
   dropout: 0.2
-  temperature: 0.07          # softmax temperature for in-batch loss
+  temperature: 0.07
+  attention_heads: 4
+  attention_layers: 1
 
 training:
-  batch_size: 1024
+  batch_size: 512
   epochs: 20
   learning_rate: 0.001
   weight_decay: 1e-5
-  num_workers: 4
-  logq_correction: true      # popularity debiasing on/off
+  num_workers: 0
+  logq_correction: true
 
 retrieval:
-  top_k_candidates: 500      # how many candidates FAISS returns
-  faiss_index_type: "IVF"    # IVF or Flat
-  nlist: 100                 # IVF parameter (number of clusters)
+  top_k_candidates: 500
+  faiss_index_type: "IVF"
+  nlist: 50
 
 mlflow:
   experiment_name: "two-tower-recsys"
-  tracking_uri: "your-dagshub-uri-here"  # we'll fill this in later
+  tracking_uri: "mlruns"
 
 serving:
   host: "0.0.0.0"
   port: 8000
-  cold_start_threshold: 3    # users with fewer interactions → popularity fallback
+  cold_start_threshold: 3

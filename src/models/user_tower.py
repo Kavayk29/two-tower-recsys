@@ -1,85 +1,119 @@
 import torch
 import torch.nn as nn
-import math
+import torch.nn.functional as F
+from typing import List
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
+
+class HistoryAttention(nn.Module):
+    """
+    Single multi-head self-attention layer applied over the
+    watch history embedding sequence before mean pooling.
+
+    This captures intra-sequence relationships in the user's
+    history — which items are most relevant to each other —
+    rather than treating all history items equally (mean pool).
+
+    Inspired by SASRec (Self-Attentive Sequential Recommendation).
+    """
+
+    def __init__(self, embed_dim: int, num_heads: int = 4, dropout: float = 0.1):
         super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe.unsqueeze(0)) # (1, max_len, d_model)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True  # (batch, seq, dim)
+        )
+        self.norm = nn.LayerNorm(embed_dim)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        """x: (B, seq_len, d_model)"""
-        return x + self.pe[:, :x.size(1)]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch_size, seq_len, embed_dim) — history embeddings
+        Returns:
+            (batch_size, embed_dim) — attended and mean-pooled representation
+        """
+        attended, _ = self.attention(x, x, x)
+        # Residual connection + layer norm (standard transformer block)
+        out = self.norm(x + self.dropout(attended))
+        # Mean pool over sequence dimension
+        return out.mean(dim=1)  # (batch_size, embed_dim)
+
 
 class UserTower(nn.Module):
-    def __init__(self, item_embedding, num_users, num_genders, num_ages, num_occupations, embedding_dim, hidden_dims, transformer_heads=4, transformer_layers=2):
+    """
+    User tower with two input pathways:
+
+    Pathway 1 — History pathway:
+        Watch history embeddings (seq_len, text_embed_dim)
+        → Self-attention (HistoryAttention)
+        → 384-dim attended representation
+
+    Pathway 2 — Profile pathway:
+        Explicit + behavioural scalar features
+        → Passed directly to MLP
+
+    Both pathways are concatenated and fed into the MLP
+    which projects down to embedding_dim.
+    """
+
+    def __init__(
+        self,
+        history_embed_dim: int,
+        scalar_feature_dim: int,
+        hidden_dims: List[int],
+        embedding_dim: int,
+        num_attention_heads: int = 4,
+        dropout: float = 0.2
+    ):
         super().__init__()
 
-        self.item_embedding = item_embedding
+        self.history_embed_dim = history_embed_dim
+        self.scalar_feature_dim = scalar_feature_dim
 
-        self.user_embedding = nn.Embedding(num_users + 1, embedding_dim, padding_idx=0)
-        self.gender_embedding = nn.Embedding(num_genders + 1, 16, padding_idx=0)
-        self.age_embedding = nn.Embedding(num_ages + 1, 16, padding_idx=0)
-        self.occ_embedding = nn.Embedding(num_occupations + 1, 16, padding_idx=0)
-        
-        # Transformer for sequence history modeling
-        self.pos_encoder = PositionalEncoding(embedding_dim, max_len=200)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim, 
-            nhead=transformer_heads, 
-            dim_feedforward=embedding_dim * 4,
-            dropout=0.1,
-            batch_first=True
+        # Self-attention over history
+        self.history_attention = HistoryAttention(
+            embed_dim=history_embed_dim,
+            num_heads=num_attention_heads,
+            dropout=dropout
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
 
-        input_dim = embedding_dim * 2 + 48
+        # MLP input = attended history + scalar features
+        mlp_input_dim = history_embed_dim + scalar_feature_dim
 
         layers = []
+        prev_dim = mlp_input_dim
         for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(input_dim, hidden_dim))
-            layers.append(nn.ReLU())
-            input_dim = hidden_dim
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ])
+            prev_dim = hidden_dim
 
-        self.dnn = nn.Sequential(*layers)
+        layers.append(nn.Linear(prev_dim, embedding_dim))
+        self.mlp = nn.Sequential(*layers)
 
-    def forward(self, user_id, gender, age, occupation, history):
+    def forward(
+        self,
+        history_embeddings: torch.Tensor,
+        scalar_features: torch.Tensor
+    ) -> torch.Tensor:
         """
-        history: (B, max_len)
+        Args:
+            history_embeddings: (batch, seq_len, history_embed_dim)
+            scalar_features: (batch, scalar_feature_dim)
+        Returns:
+            (batch, embedding_dim) L2-normalised user embedding
         """
-        # (B, max_len, D)
-        embedded_hist = self.item_embedding(history)
-        
-        # Add positional encoding
-        embedded_hist = self.pos_encoder(embedded_hist)
+        # Self-attention over history → (batch, history_embed_dim)
+        history_repr = self.history_attention(history_embeddings)
 
-        # padding mask for transformer (True means IGNORE)
-        src_key_padding_mask = (history == 0) # (B, max_len)
-        
-        # pass through transformer
-        # output is (B, max_len, D)
-        transformer_out = self.transformer(embedded_hist, src_key_padding_mask=src_key_padding_mask)
+        # Concatenate with scalar features
+        combined = torch.cat([history_repr, scalar_features], dim=-1)
 
-        # mask padding (0s) for pooling
-        mask = (~src_key_padding_mask).float().unsqueeze(-1)  # (B, max_len, 1)
-        # Avoid NaN when all history is padded (e.g. cold start user)
-        transformer_out = transformer_out.masked_fill(mask == 0, 0.0)
-
-        # mean pooling over the sequence
-        sum_embeddings = transformer_out.sum(dim=1)  # (B, D)
-        lengths = mask.sum(dim=1)  # (B, 1)
-        hist_vec = sum_embeddings / (lengths + 1e-8)
-
-        u_vec = self.user_embedding(user_id)
-        g_vec = self.gender_embedding(gender)
-        a_vec = self.age_embedding(age)
-        o_vec = self.occ_embedding(occupation)
-
-        concat_vec = torch.cat([u_vec, g_vec, a_vec, o_vec, hist_vec], dim=-1)
-
-        return self.dnn(concat_vec)
+        # MLP projection
+        embedding = self.mlp(combined)
+        return F.normalize(embedding, p=2, dim=-1)

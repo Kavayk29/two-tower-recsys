@@ -1,9 +1,9 @@
 # Virtual environment
 venv/
+.venv/
 
 # Data (too large for git)
-data/raw/
-data/processed/
+data/
 
 # MLflow experiments (hosted on DagsHub separately)
 experiments/

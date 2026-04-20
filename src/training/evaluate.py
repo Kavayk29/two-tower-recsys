@@ -1,98 +1,97 @@
-import os
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
 import torch
 import numpy as np
-import faiss
+import pandas as pd
+from typing import Dict
 
-def compute_metrics(top_k_items, targets):
-    """
-    top_k_items: (B, K) numpy array of retrieved item IDs
-    targets: (B,) numpy array of ground truth item IDs
-    """
-    hits = 0
-    mrr = 0.0
-    ndcg = 0.0
-    
-    for i in range(len(targets)):
-        target = targets[i]
-        retrieved = top_k_items[i]
-        
-        if target in retrieved:
-            hits += 1
-            rank = np.where(retrieved == target)[0][0] + 1
-            mrr += 1.0 / rank
-            ndcg += 1.0 / np.log2(rank + 1)
-            
-    n = len(targets)
-    if n == 0:
-        return 0.0, 0.0, 0.0
-        
-    return hits / n, mrr / n, ndcg / n
 
-def evaluate_model(model, val_loader, item_features, title_embeddings, device, k=10):
+def compute_ndcg_at_k(relevant: set, ranked: list, k: int) -> float:
+    dcg = sum(
+        1.0 / np.log2(r + 2)
+        for r, item in enumerate(ranked[:k])
+        if item in relevant
+    )
+    idcg = sum(1.0 / np.log2(i + 2) for i in range(min(len(relevant), k)))
+    return dcg / idcg if idcg > 0 else 0.0
+
+
+def compute_hit_rate_at_k(relevant: set, ranked: list, k: int) -> float:
+    return float(bool(set(ranked[:k]) & relevant))
+
+
+def evaluate_model(
+    model,
+    val_interactions: pd.DataFrame,
+    item_features: pd.DataFrame,
+    user_features: pd.DataFrame,
+    device: torch.device,
+    history_embed_dim: int = 384,
+    k_values: list = [10, 50],
+    max_users: int = 300
+) -> Dict[str, float]:
     model.eval()
-    
-    # 1. Build FAISS Index of all items
-    item_ids = []
-    item_vectors = []
-    max_genres = 6
-    
+
+    hist_cols = [
+        c for c in user_features.columns
+        if c.startswith("user_hist_emb_")
+    ]
+    scalar_cols = [
+        c for c in user_features.columns
+        if c != "userId" and not c.startswith("user_hist_emb_")
+    ]
+    item_feat_cols = [
+        c for c in item_features.columns
+        if c not in ["movieId", "year"]
+    ]
+
+    user_feat_idx = user_features.set_index("userId")
+    item_feat_idx = item_features.set_index("movieId")
+    movie_ids = item_features["movieId"].values
+
+    # Precompute all item embeddings
+    print("  Precomputing item embeddings...")
+    all_item_feats = torch.tensor(
+        item_feat_idx[item_feat_cols].values.astype(np.float32),
+        dtype=torch.float32
+    ).to(device)
+
     with torch.no_grad():
-        for iid_str, feats in item_features.items():
-            iid = int(iid_str)
-            genres = feats["genres"][:max_genres]
-            genres_padded = np.zeros(max_genres, dtype=np.int64)
-            genres_padded[:len(genres)] = genres
-            
-            i_batch = {
-                "item_id": torch.tensor([iid]).to(device),
-                "title_emb": title_embeddings[iid].unsqueeze(0).to(device),
-                "genres": torch.tensor([genres_padded]).to(device)
-            }
-            
-            vec = model.item_tower(i_batch["item_id"], i_batch["title_emb"], i_batch["genres"])
-            item_vectors.append(vec.cpu().numpy()[0])
-            item_ids.append(iid)
-            
-    item_vectors = np.array(item_vectors).astype("float32")
-    item_ids = np.array(item_ids).astype("int64")
-    
-    index = faiss.IndexFlatIP(item_vectors.shape[1])
-    id_index = faiss.IndexIDMap(index)
-    id_index.add_with_ids(item_vectors, item_ids)
-    
-    # 2. Evaluate
-    all_targets = []
-    all_retrieved = []
-    
-    with torch.no_grad():
-        for u_batch, i_batch in val_loader:
-            targets = i_batch["item_id"].numpy() # ground truth
-            u_batch = {key: val.to(device) for key, val in u_batch.items()}
-            
-            vecs = model.user_tower(
-                u_batch["user_id"], 
-                u_batch["gender"], 
-                u_batch["age"], 
-                u_batch["occupation"], 
-                u_batch["history"]
+        all_item_embs = model.item_tower(all_item_feats)  # (N, D)
+
+    user_val_items = (
+        val_interactions.groupby("userId")["movieId"]
+        .apply(set).to_dict()
+    )
+
+    val_users = [
+        u for u in list(user_val_items.keys())
+        if u in user_feat_idx.index
+    ][:max_users]
+
+    metrics = {f"ndcg@{k}": [] for k in k_values}
+    metrics.update({f"hit_rate@{k}": [] for k in k_values})
+
+    for user_id in val_users:
+        hist = torch.tensor(
+            user_feat_idx.loc[user_id, hist_cols].values.astype(np.float32),
+            dtype=torch.float32
+        ).unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, 384)
+
+        scalar = torch.tensor(
+            user_feat_idx.loc[user_id, scalar_cols].values.astype(np.float32),
+            dtype=torch.float32
+        ).unsqueeze(0).to(device)  # (1, scalar_dim)
+
+        with torch.no_grad():
+            user_emb = model.user_tower(hist, scalar)  # (1, D)
+
+        scores = (user_emb @ all_item_embs.T).squeeze(0).cpu().numpy()
+        ranked = movie_ids[np.argsort(-scores)].tolist()
+        relevant = user_val_items[user_id]
+
+        for k in k_values:
+            metrics[f"ndcg@{k}"].append(compute_ndcg_at_k(relevant, ranked, k))
+            metrics[f"hit_rate@{k}"].append(
+                compute_hit_rate_at_k(relevant, ranked, k)
             )
-            vecs_np = vecs.cpu().numpy().astype("float32")
-            
-            # Retrieve top K
-            scores, I = id_index.search(vecs_np, k)
-            
-            all_retrieved.append(I)
-            all_targets.append(targets)
-            
-    if len(all_retrieved) == 0:
-        return {"recall": 0.0, "mrr": 0.0, "ndcg": 0.0}
-        
-    all_retrieved = np.vstack(all_retrieved)
-    all_targets = np.concatenate(all_targets)
-    
-    recall, mrr, ndcg = compute_metrics(all_retrieved, all_targets)
-    
-    model.train() # restore train mode
-    return {"recall": recall, "mrr": mrr, "ndcg": ndcg}
+
+    return {key: float(np.mean(vals)) for key, vals in metrics.items()}

@@ -1,73 +1,110 @@
 import torch
 from torch.utils.data import Dataset
+import pandas as pd
+import numpy as np
 
 
-class RecSysDataset(Dataset):
-    def __init__(self, data):
-        self.data = data
+class InteractionDataset(Dataset):
+    """
+    Each sample: one positive (user, item) interaction.
+    Returns:
+      - history_embeddings: (seq_len, text_embed_dim) — for self-attention
+      - scalar_features: (scalar_dim,) — profile + behavioural scalars
+      - item_features: (item_dim,)
+      - sampling_prob: float — for logQ correction
+    """
 
-    def __len__(self):
-        return len(self.data)
+    def __init__(
+        self,
+        interactions: pd.DataFrame,
+        user_features: pd.DataFrame,
+        item_features: pd.DataFrame,
+        history_embed_dim: int = 384,
+        max_history_len: int = 50
+    ):
+        self.history_embed_dim = history_embed_dim
+        self.max_history_len = max_history_len
 
-    def __getitem__(self, idx):
-        sample = self.data[idx]
+        valid_users = set(user_features["userId"].values)
+        valid_items = set(item_features["movieId"].values)
 
-        return {
-            "history": sample["history"],
-            "target": sample["target"]
-        }
-    
-def collate_fn(batch, max_history_len):
-    histories = []
-    targets = []
+        self.interactions = interactions[
+            interactions["userId"].isin(valid_users) &
+            interactions["movieId"].isin(valid_items)
+        ].reset_index(drop=True)
 
-    for sample in batch:
-        history = sample["history"]
-        target = sample["target"]
+        print(f"Dataset: {len(self.interactions):,} valid interactions")
 
-        # truncate
-        history = history[-max_history_len:]
+        self.user_features = user_features.set_index("userId")
+        self.item_features = item_features.set_index("movieId")
 
-        # pad (LEFT padding)
-        padding = [0] * (max_history_len - len(history))
-        history = padding + history
+        # Split user feature columns into two groups
+        all_user_cols = [c for c in user_features.columns if c != "userId"]
 
-        histories.append(history)
-        targets.append(target)
+        # History embedding columns: user_hist_emb_0 ... user_hist_emb_383
+        self.hist_cols = [
+            c for c in all_user_cols if c.startswith("user_hist_emb_")
+        ]
 
-    histories = torch.tensor(histories, dtype=torch.long)
-    targets = torch.tensor(targets, dtype=torch.long)
+        # Scalar columns: everything else (genre affinity + profile + behavioural)
+        self.scalar_cols = [
+            c for c in all_user_cols if not c.startswith("user_hist_emb_")
+        ]
 
-    return {
-        "history": histories,   # (B, max_len)
-        "target": targets       # (B,)
-    }
-import json
-from torch.utils.data import DataLoader
+        # Item feature columns
+        self.item_feat_cols = [
+            c for c in item_features.columns
+            if c not in ["movieId", "year"]
+        ]
 
+        # Sampling probabilities for logQ correction
+        item_counts = self.interactions["movieId"].value_counts()
+        total = item_counts.sum()
+        self.item_sampling_probs = (item_counts / total).to_dict()
 
-def load_json(path):
-    with open(path, "r") as f:
-        return json.load(f)
+        print(f"  History embedding cols: {len(self.hist_cols)}")
+        print(f"  Scalar feature cols: {len(self.scalar_cols)}")
+        print(f"  Item feature cols: {len(self.item_feat_cols)}")
 
+    def __len__(self) -> int:
+        return len(self.interactions)
 
-if __name__ == "__main__":
-    data = load_json("data/processed/train.json")
+    def __getitem__(self, idx: int):
+        row = self.interactions.iloc[idx]
+        user_id = row["userId"]
+        movie_id = row["movieId"]
 
-    dataset = RecSysDataset(data)
+        # History embeddings: reshape to (seq_len=1, embed_dim)
+        # We store mean-pooled history as a single vector.
+        # The attention layer will treat it as seq_len=1 here.
+        # For true sequence attention, extend this to store full history.
+        hist = self.user_features.loc[user_id, self.hist_cols].values.astype(np.float32)
+        hist_tensor = torch.tensor(hist, dtype=torch.float32).unsqueeze(0)
+        # Shape: (1, 384) — single pooled vector treated as sequence of length 1
 
-    dataloader = DataLoader(
-        dataset,
-        batch_size=4,
-        shuffle=True,
-        collate_fn=lambda x: collate_fn(x, max_history_len=5)
-    )
+        scalar = self.user_features.loc[
+            user_id, self.scalar_cols
+        ].values.astype(np.float32)
 
-    for batch in dataloader:
-        print("History shape:", batch["history"].shape)
-        print("Target shape:", batch["target"].shape)
-        print("\nHistory:")
-        print(batch["history"])
-        print("\nTarget:")
-        print(batch["target"])
-        break
+        item_feat = self.item_features.loc[
+            movie_id, self.item_feat_cols
+        ].values.astype(np.float32)
+
+        sampling_prob = np.float32(
+            self.item_sampling_probs.get(movie_id, 1e-9)
+        )
+
+        return (
+            hist_tensor,
+            torch.tensor(scalar, dtype=torch.float32),
+            torch.tensor(item_feat, dtype=torch.float32),
+            torch.tensor(sampling_prob, dtype=torch.float32)
+        )
+
+    @property
+    def scalar_dim(self) -> int:
+        return len(self.scalar_cols)
+
+    @property
+    def item_dim(self) -> int:
+        return len(self.item_feat_cols)
