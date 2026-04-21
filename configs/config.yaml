@@ -20,12 +20,11 @@ model:
   temperature: 0.07
   attention_heads: 4
   attention_layers: 1
-
 training:
   batch_size: 512
   epochs: 30
   learning_rate: 0.001
-  weight_decay: 1e-5
+  weight_decay: 0.00001
   num_workers: 0
   logq_correction: true
 
