@@ -91,7 +91,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     print(f"History embed dim: {history_embed_dim}")
     print(f"Scalar feature dim: {scalar_dim}")
     print(f"Item feature dim: {item_dim}")
-
+    
     mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
     mlflow.set_experiment(config["mlflow"]["experiment_name"])
 
@@ -167,6 +167,8 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
 
             log_dict = {"train_loss": train_loss, "epoch_time_sec": elapsed}
             log_dict.update(val_metrics)
+            
+            log_dict = {k: v for k,v in log_dict.items() if not (isinstance(v,float) and np.isnan(v))}
             mlflow.log_metrics(log_dict, step=epoch)
 
             print(f"Epoch {epoch:02d} | Loss: {train_loss:.4f} | {elapsed:.1f}s")

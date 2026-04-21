@@ -45,7 +45,11 @@ def evaluate_model(
 
     user_feat_idx = user_features.set_index("userId")
     item_feat_idx = item_features.set_index("movieId")
-    movie_ids = item_features["movieId"].values
+    
+    user_feat_idx.index = user_feat_idx.index.astype(int)
+    item_feat_idx.index = item_feat_idx.index.astype(int)
+
+    movie_ids = item_features["movieId"].astype(int).values
 
     # Precompute all item embeddings
     print("  Precomputing item embeddings...")
@@ -66,6 +70,10 @@ def evaluate_model(
         u for u in list(user_val_items.keys())
         if u in user_feat_idx.index
     ][:max_users]
+
+    if not val_users:
+        print("No validation users found in user features.skipping.")
+        return {f"ndcg@{k}":0.0 for k in k_values } | {f"hit_rate@{k}":0.0 for k in k_values}
 
     metrics = {f"ndcg@{k}": [] for k in k_values}
     metrics.update({f"hit_rate@{k}": [] for k in k_values})
