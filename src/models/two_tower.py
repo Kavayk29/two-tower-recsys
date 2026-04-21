@@ -72,11 +72,9 @@ class TwoTowerModel(nn.Module):
         history_embeddings: torch.Tensor,
         scalar_features: torch.Tensor
     ) -> torch.Tensor:
-        self.eval()
         with torch.no_grad():
             return self.user_tower(history_embeddings, scalar_features)
 
     def get_item_embedding(self, item_features: torch.Tensor) -> torch.Tensor:
-        self.eval()
         with torch.no_grad():
             return self.item_tower(item_features)

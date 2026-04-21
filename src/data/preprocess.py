@@ -82,30 +82,25 @@ def filter_interactions(
 def temporal_split(
     interactions: pd.DataFrame, val_frac: float, test_frac: float
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    user_last = interactions.groupby("userId")["timestamp"].max()
-    test_cutoff = user_last.quantile(1.0 - test_frac)
-    val_cutoff = user_last.quantile(1.0 - test_frac - val_frac)
+    
+    train_rows, val_rows, test_rows = [], [], []
+    
+    for user_id, group in interactions.groupby("userId"):
+        group = group.sort_values("timestamp")
+        n = len(group)
+        
+        n_test = max(1, int(n * test_frac))
+        n_val = max(1, int(n * val_frac))
 
-    print(f"\nTemporal split cutoffs:")
-    print(f"  Val cutoff:  {val_cutoff}")
-    print(f"  Test cutoff: {test_cutoff}")
+        test_rows.append(group.tail(n_test))
+        val_rows.append(group.iloc[-(n_test + n_val):-n_test])
+        train_rows.append(group.iloc[:-(n_test + n_val)])
 
-    test_users = user_last[user_last >= test_cutoff].index
-    val_users = user_last[
-        (user_last >= val_cutoff) & (user_last < test_cutoff)
-    ].index
-    train_users = user_last[user_last < val_cutoff].index
+    train = pd.concat(train_rows).reset_index(drop=True)
+    val = pd.concat(val_rows).reset_index(drop=True)
+    test = pd.concat(test_rows).reset_index(drop=True)
 
-    train = interactions[interactions["userId"].isin(train_users)].copy()
-    val = interactions[interactions["userId"].isin(val_users)].copy()
-    test = interactions[interactions["userId"].isin(test_users)].copy()
-
-    print(f"\nSplit sizes:")
-    print(f"  Train: {len(train):,} interactions, {train['userId'].nunique():,} users")
-    print(f"  Val:   {len(val):,} interactions, {val['userId'].nunique():,} users")
-    print(f"  Test:  {len(test):,} interactions, {test['userId'].nunique():,} users")
     return train, val, test
-
 
 def cap_samples_per_user(
     interactions: pd.DataFrame, max_samples: int = 50

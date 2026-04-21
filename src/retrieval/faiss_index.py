@@ -22,6 +22,8 @@ def build_faiss_index(
         )
         print(f"Training IVF index (nlist={nlist})...")
         index.train(embeddings)
+        index.nprobe = 10
+        index.add(embeddings)
     else:
         raise ValueError(f"Unknown index type: {index_type}")
 
@@ -39,6 +41,8 @@ def save_index(index, movie_ids: np.ndarray, save_dir: Path) -> None:
 
 def load_index(save_dir: Path):
     index = faiss.read_index(str(save_dir / "item_index.faiss"))
+    if hasattr(index,"nprobe"):
+        index.nprobe = 10
     movie_ids = np.load(save_dir / "movie_ids.npy")
     print(f"Index loaded: {index.ntotal} vectors")
     return index, movie_ids

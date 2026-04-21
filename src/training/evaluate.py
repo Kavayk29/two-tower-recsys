@@ -75,8 +75,8 @@ def evaluate_model(
         print("No validation users found in user features.skipping.")
         return {f"ndcg_at_{k}":0.0 for k in k_values } | {f"hit_rate_at_{k}":0.0 for k in k_values}
 
-    metrics = {f"ndcg_at_k{k}": [] for k in k_values}
-    metrics.update({f"hit_rate_at_k{k}": [] for k in k_values})
+    metrics = {f"ndcg_at_{k}": [] for k in k_values}
+    metrics.update({f"hit_rate_at_{k}": [] for k in k_values})
 
     for user_id in val_users:
         hist = torch.tensor(
@@ -97,9 +97,7 @@ def evaluate_model(
         relevant = user_val_items[user_id]
 
         for k in k_values:
-            metrics[f"ndcg@{k}"].append(compute_ndcg_at_k(relevant, ranked, k))
-            metrics[f"hit_rate@{k}"].append(
-                compute_hit_rate_at_k(relevant, ranked, k)
-            )
+            metrics[f"ndcg_at_{k}"].append(compute_ndcg_at_k(relevant, ranked, k))
+            metrics[f"hit_rate_at_{k}"].append(compute_hit_rate_at_k(relevant, ranked, k))
 
     return {key: float(np.mean(vals)) for key, vals in metrics.items()}
