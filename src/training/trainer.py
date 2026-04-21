@@ -167,7 +167,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
 
             log_dict = {"train_loss": train_loss, "epoch_time_sec": elapsed}
             log_dict.update(val_metrics)
-            
+
             log_dict = {k: v for k,v in log_dict.items() if not (isinstance(v,float) and np.isnan(v))}
             mlflow.log_metrics(log_dict, step=epoch)
 
@@ -175,12 +175,12 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             for k, v in val_metrics.items():
                 print(f"  {k}: {v:.4f}")
 
-            if val_metrics.get("ndcg@10", 0) > best_ndcg:
-                best_ndcg = val_metrics["ndcg@10"]
+            if val_metrics.get("ndcg_at_10", 0) > best_ndcg:
+                best_ndcg = val_metrics["ndcg_at_10"]
                 torch.save(model.state_dict(), best_model_path)
                 print(f"  New best NDCG@10: {best_ndcg:.4f} — saved")
 
-        mlflow.log_metric("best_ndcg@10", best_ndcg)
+        mlflow.log_metric("best_ndcg_at_10", best_ndcg)
         mlflow.log_artifact(str(best_model_path))
         mlflow.pytorch.log_model(
             model, "two-tower-model",
