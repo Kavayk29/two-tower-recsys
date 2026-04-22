@@ -35,39 +35,42 @@ def build_item_features(
 ) -> pd.DataFrame:
     print("Building item features...")
 
-    # Use enriched text if available, else title only
     if "rich_text" in movies.columns:
         text_col = "rich_text"
-        print("  Using TMDB-enriched text (title + overview + cast + director)")
+        print(" Using TMDB-enriched text (title + overview + cast + director)")
     else:
         text_col = "title_clean"
-        print("  Using title only (run TMDB enrichment for richer features)")
+        print(" Using title only (run TMDB enrichment for richer features)")
 
-    # Genre multi-hot
     for genre in ALL_GENRES:
         col = f"genre_{genre.lower().replace('-', '_')}"
         movies[col] = movies["genres"].str.contains(
             genre, regex=False
         ).astype(np.float32)
 
-    # Release era: 0=pre1980, 1=1980s, 2=1990s, 3=2000s, 4=2010s+
     def year_to_era(year):
-        if pd.isna(year): return 2
+        if pd.isna(year):
+            return 2
         y = int(year)
-        if y < 1980: return 0
-        elif y < 1990: return 1
-        elif y < 2000: return 2
-        elif y < 2010: return 3
-        else: return 4
+        if y < 1980:
+            return 0
+        elif y < 1990:
+            return 1
+        elif y < 2000:
+            return 2
+        elif y < 2010:
+            return 3
+        else:
+            return 4
 
     movies["release_era"] = movies["year"].apply(year_to_era).astype(np.float32)
     movies["year_norm"] = (
         (movies["year"].fillna(movies["year"].median()) - 1900) / 120
     ).astype(np.float32)
 
-    # Text embedding
-    print(f"  Encoding {len(movies):,} movie texts...")
+    print(f" Encoding {len(movies):,} movie texts...")
     texts = movies[text_col].fillna("").tolist()
+
     embeddings = text_model.encode(
         texts,
         batch_size=256,
@@ -79,13 +82,16 @@ def build_item_features(
     embed_df = pd.DataFrame(embeddings, columns=embed_cols)
 
     movies = pd.concat([movies.reset_index(drop=True), embed_df], axis=1)
+
     movies = movies.drop(
-        columns=["title", "genres", "title_clean", "rich_text",
-                 "overview", "cast", "director"],
+        columns=[
+            "title", "genres", "title_clean", "rich_text",
+            "overview", "cast", "director"
+        ],
         errors="ignore"
     )
 
-    print(f"  Item features shape: {movies.shape}")
+    print(f" Item features shape: {movies.shape}")
     return movies
 
 
@@ -103,16 +109,21 @@ def build_popularity_features(
     stats["item_num_ratings_log"] = np.log1p(
         stats["item_num_ratings"]
     ).astype(np.float32)
+
     stats["item_avg_rating"] = stats["item_avg_rating"].astype(np.float32)
 
     raw_counts = train_interactions.groupby("movieId").size()
     quantiles = raw_counts.quantile([0.25, 0.5, 0.75])
 
     def assign_tier(count):
-        if count <= quantiles[0.25]: return 0.0
-        elif count <= quantiles[0.5]: return 1.0
-        elif count <= quantiles[0.75]: return 2.0
-        else: return 3.0
+        if count <= quantiles[0.25]:
+            return 0.0
+        elif count <= quantiles[0.5]:
+            return 1.0
+        elif count <= quantiles[0.75]:
+            return 2.0
+        else:
+            return 3.0
 
     tier_series = raw_counts.apply(assign_tier).reset_index()
     tier_series.columns = ["movieId", "item_popularity_tier"]
@@ -123,19 +134,19 @@ def build_popularity_features(
     item_features["item_num_ratings_log"] = item_features[
         "item_num_ratings_log"
     ].fillna(0.0).astype(np.float32)
+
     item_features["item_avg_rating"] = item_features[
         "item_avg_rating"
-    ].fillna(
-        item_features["item_avg_rating"].median()
-    ).astype(np.float32)
+    ].fillna(item_features["item_avg_rating"].median()).astype(np.float32)
+
     item_features["item_popularity_tier"] = item_features[
         "item_popularity_tier"
     ].fillna(0.0).astype(np.float32)
 
-    # Drop raw count col
     item_features = item_features.drop(
         columns=["item_num_ratings"], errors="ignore"
     )
+
     return item_features
 
 
@@ -146,12 +157,6 @@ def build_user_features(
     max_history_len: int = 50,
     embed_dim: int = 384
 ) -> pd.DataFrame:
-    """
-    User features combine:
-    1. Explicit profile features (age, gender, occupation) from users.dat
-    2. Behavioural features engineered from interaction history
-    3. Self-attended mean pooling of watch history embeddings
-    """
     print("Building user features...")
 
     genre_cols = [c for c in item_features.columns if c.startswith("genre_")]
@@ -166,40 +171,43 @@ def build_user_features(
     user_ids = merged["userId"].unique()
     users_indexed = users.set_index("userId")
 
-    print(f"  Computing features for {len(user_ids):,} users...")
+    print(f" Computing features for {len(user_ids):,} users...")
+
     for user_id in tqdm(user_ids, desc="Users"):
         user_data = merged[merged["userId"] == user_id].sort_values("timestamp")
         history = user_data.tail(max_history_len)
 
-        # --- Behavioural features ---
         genre_affinity = history[genre_cols].mean().values.astype(np.float32)
-        mean_embedding = history[embed_cols].mean().values.astype(np.float32)
+
+        history_embeds = history[embed_cols].values.astype(np.float32)
+        padded = np.zeros((max_history_len, embed_dim), dtype=np.float32)
+
+        actual_len = min(len(history_embeds), max_history_len)
+        padded[:actual_len] = history_embeds[-actual_len:]
+
+        history_flat = padded.flatten().tolist()
 
         total_interactions = len(user_data)
         date_range = max(
             (user_data["timestamp"].max() - user_data["timestamp"].min()).days, 1
         )
+
         interactions_per_month = total_interactions / (date_range / 30 + 1)
+
         days_since_last = (
             train_interactions["timestamp"].max() - user_data["timestamp"].max()
         ).days
 
         record = {"userId": user_id}
 
-        # Genre affinity (18 dims)
         for i, col in enumerate(genre_cols):
             record[f"user_{col}"] = float(genre_affinity[i])
 
-        # Mean pooled history embeddings (384 dims)
-        for i in range(embed_dim):
-            record[f"user_hist_emb_{i}"] = float(mean_embedding[i])
-
-        # Behavioural scalars
+        record["user_history_embs"] = history_flat
         record["user_total_interactions"] = float(np.log1p(total_interactions))
         record["user_interactions_per_month"] = float(np.log1p(interactions_per_month))
         record["user_days_since_last"] = float(np.log1p(days_since_last))
 
-        # --- Explicit profile features ---
         if user_id in users_indexed.index:
             profile = users_indexed.loc[user_id]
             record["user_gender"] = float(profile["gender_encoded"])
@@ -213,23 +221,27 @@ def build_user_features(
         user_records.append(record)
 
     user_features = pd.DataFrame(user_records)
-    print(f"  User features shape: {user_features.shape}")
+    print(f" User features shape: {user_features.shape}")
+
     return user_features
 
 
 def run_feature_engineering(config_path: str = "configs/config.yaml") -> None:
     config = load_config(config_path)
+
     processed_dir = Path(config["data"]["processed_dir"])
     embed_dim = config["features"]["text_embed_dim"]
     max_history = config["features"]["max_history_len"]
 
     print("Loading processed data...")
-    # Use enriched movies if available
+
     enriched_path = processed_dir / "movies_enriched.parquet"
     movies_path = processed_dir / "movies.parquet"
+
     movies = pd.read_parquet(
         enriched_path if enriched_path.exists() else movies_path
     )
+
     users = pd.read_parquet(processed_dir / "users.parquet")
     train = pd.read_parquet(processed_dir / "train_interactions.parquet")
 
@@ -238,12 +250,14 @@ def run_feature_engineering(config_path: str = "configs/config.yaml") -> None:
 
     item_features = build_item_features(movies, text_model, embed_dim)
     item_features = build_popularity_features(train, item_features)
+
     item_features.to_parquet(processed_dir / "item_features.parquet", index=False)
     print(f"Saved item_features.parquet — shape: {item_features.shape}")
 
     user_features = build_user_features(
         train, users, item_features, max_history, embed_dim
     )
+
     user_features.to_parquet(processed_dir / "user_features.parquet", index=False)
     print(f"Saved user_features.parquet — shape: {user_features.shape}")
 

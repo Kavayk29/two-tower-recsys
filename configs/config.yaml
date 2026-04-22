@@ -17,21 +17,22 @@ model:
   user_hidden_dims: [256, 128]
   item_hidden_dims: [256, 128]
   dropout: 0.2
-  temperature: 0.07
+  temperature: 0.1
   attention_heads: 4
-  attention_layers: 1
+  attention_layers: 2
 training:
-  batch_size: 512
-  epochs: 30
+  batch_size: 256
+  epochs: 50
   learning_rate: 0.001
   weight_decay: 0.00001
   num_workers: 0
-  logq_correction: true
+  logq_correction: false
 
 retrieval:
   top_k_candidates: 500
   faiss_index_type: "IVF"
   nlist: 50
+  nprobe: 10
 
 mlflow:
   experiment_name: "two-tower-recsys"

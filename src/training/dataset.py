@@ -7,11 +7,12 @@ import numpy as np
 class InteractionDataset(Dataset):
     """
     Each sample: one positive (user, item) interaction.
+
     Returns:
-      - history_embeddings: (seq_len, text_embed_dim) — for self-attention
-      - scalar_features: (scalar_dim,) — profile + behavioural scalars
-      - item_features: (item_dim,)
-      - sampling_prob: float — for logQ correction
+        - history_embeddings: (max_history_len, history_embed_dim)
+        - scalar_features: (scalar_dim,)
+        - item_features: (item_dim,)
+        - sampling_prob: float — for logQ correction
     """
 
     def __init__(
@@ -38,33 +39,28 @@ class InteractionDataset(Dataset):
         self.user_features = user_features.set_index("userId")
         self.item_features = item_features.set_index("movieId")
 
-        # Split user feature columns into two groups
         all_user_cols = [c for c in user_features.columns if c != "userId"]
 
-        # History embedding columns: user_hist_emb_0 ... user_hist_emb_383
-        self.hist_cols = [
-            c for c in all_user_cols if c.startswith("user_hist_emb_")
-        ]
+        # Full history stored as single flattened column
+        self.hist_col = "user_history_embs"
 
-        # Scalar columns: everything else (genre affinity + profile + behavioural)
+        # Scalar features: everything except history embeddings
         self.scalar_cols = [
-            c for c in all_user_cols if not c.startswith("user_hist_emb_")
+            c for c in all_user_cols if c != self.hist_col
         ]
 
-        # Item feature columns
         self.item_feat_cols = [
             c for c in item_features.columns
             if c not in ["movieId", "year"]
         ]
 
-        # Sampling probabilities for logQ correction
         item_counts = self.interactions["movieId"].value_counts()
         total = item_counts.sum()
         self.item_sampling_probs = (item_counts / total).to_dict()
 
-        print(f"  History embedding cols: {len(self.hist_cols)}")
-        print(f"  Scalar feature cols: {len(self.scalar_cols)}")
-        print(f"  Item feature cols: {len(self.item_feat_cols)}")
+        print(f" Scalar feature cols: {len(self.scalar_cols)}")
+        print(f" Item feature cols:  {len(self.item_feat_cols)}")
+        print(f" History shape:    ({max_history_len}, {history_embed_dim})")
 
     def __len__(self) -> int:
         return len(self.interactions)
@@ -74,13 +70,15 @@ class InteractionDataset(Dataset):
         user_id = row["userId"]
         movie_id = row["movieId"]
 
-        # History embeddings: reshape to (seq_len=1, embed_dim)
-        # We store mean-pooled history as a single vector.
-        # The attention layer will treat it as seq_len=1 here.
-        # For true sequence attention, extend this to store full history.
-        hist = self.user_features.loc[user_id, self.hist_cols].values.astype(np.float32)
-        hist_tensor = torch.tensor(hist, dtype=torch.float32).unsqueeze(0)
-        # Shape: (1, 384) — single pooled vector treated as sequence of length 1
+        # History: reshape flat list → (max_history_len, history_embed_dim)
+        hist_flat = np.array(
+            self.user_features.loc[user_id, self.hist_col],
+            dtype=np.float32
+        )
+
+        hist_tensor = torch.tensor(hist_flat).reshape(
+            self.max_history_len, self.history_embed_dim
+        )
 
         scalar = self.user_features.loc[
             user_id, self.scalar_cols

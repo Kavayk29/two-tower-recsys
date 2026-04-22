@@ -4,58 +4,54 @@ import torch.nn.functional as F
 from typing import List
 
 
-class HistoryAttention(nn.Module):
+class TransformerBlock(nn.Module):
     """
-    Single multi-head self-attention layer applied over the
-    watch history embedding sequence before mean pooling.
-
-    This captures intra-sequence relationships in the user's
-    history — which items are most relevant to each other —
-    rather than treating all history items equally (mean pool).
-
-    Inspired by SASRec (Self-Attentive Sequential Recommendation).
+    Full transformer block: self-attention + feedforward network.
+    Attention routes information between history items.
+    FFN transforms that routed information non-linearly.
+    Both are needed — attention alone is purely linear.
     """
 
-    def __init__(self, embed_dim: int, num_heads: int = 4, dropout: float = 0.1):
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
         super().__init__()
+
         self.attention = nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=num_heads,
             dropout=dropout,
-            batch_first=True  # (batch, seq, dim)
+            batch_first=True
         )
-        self.norm = nn.LayerNorm(embed_dim)
+
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout)
+        )
+
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: (batch_size, seq_len, embed_dim) — history embeddings
-        Returns:
-            (batch_size, embed_dim) — attended and mean-pooled representation
-        """
+        # Self-attention with residual + norm
         attended, _ = self.attention(x, x, x)
-        # Residual connection + layer norm (standard transformer block)
-        out = self.norm(x + self.dropout(attended))
-        # Mean pool over sequence dimension
-        return out.mean(dim=1)  # (batch_size, embed_dim)
+        x = self.norm1(x + self.dropout(attended))
+
+        # FFN with residual + norm
+        x = self.norm2(x + self.ffn(x))
+
+        return x
 
 
 class UserTower(nn.Module):
     """
-    User tower with two input pathways:
-
-    Pathway 1 — History pathway:
-        Watch history embeddings (seq_len, text_embed_dim)
-        → Self-attention (HistoryAttention)
-        → 384-dim attended representation
-
-    Pathway 2 — Profile pathway:
-        Explicit + behavioural scalar features
-        → Passed directly to MLP
-
-    Both pathways are concatenated and fed into the MLP
-    which projects down to embedding_dim.
+    User tower:
+    - Positional embeddings over watch history sequence
+    - Stack of transformer blocks (attention + FFN)
+    - Mean pool → concat scalar features → MLP → L2 normalized embedding
     """
 
     def __init__(
@@ -65,25 +61,31 @@ class UserTower(nn.Module):
         hidden_dims: List[int],
         embedding_dim: int,
         num_attention_heads: int = 4,
+        num_attention_layers: int = 2,
+        max_history_len: int = 50,
         dropout: float = 0.2
     ):
         super().__init__()
 
         self.history_embed_dim = history_embed_dim
-        self.scalar_feature_dim = scalar_feature_dim
+        self.max_history_len = max_history_len
 
-        # Self-attention over history
-        self.history_attention = HistoryAttention(
-            embed_dim=history_embed_dim,
-            num_heads=num_attention_heads,
-            dropout=dropout
-        )
+        # Positional embeddings
+        self.pos_embedding = nn.Embedding(max_history_len, history_embed_dim)
 
-        # MLP input = attended history + scalar features
+        # Transformer blocks
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(history_embed_dim, num_attention_heads, dropout)
+            for _ in range(num_attention_layers)
+        ])
+
+        self.history_norm = nn.LayerNorm(history_embed_dim)
+
+        # MLP
         mlp_input_dim = history_embed_dim + scalar_feature_dim
-
         layers = []
         prev_dim = mlp_input_dim
+
         for hidden_dim in hidden_dims:
             layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
@@ -105,16 +107,28 @@ class UserTower(nn.Module):
         Args:
             history_embeddings: (batch, seq_len, history_embed_dim)
             scalar_features: (batch, scalar_feature_dim)
+
         Returns:
-            (batch, embedding_dim) L2-normalised user embedding
+            (batch, embedding_dim) L2-normalized user embedding
         """
-        # Self-attention over history → (batch, history_embed_dim)
-        history_repr = self.history_attention(history_embeddings)
 
-        # Concatenate with scalar features
+        batch_size, seq_len, _ = history_embeddings.shape
+
+        # Add positional embeddings
+        positions = torch.arange(seq_len, device=history_embeddings.device)
+        x = history_embeddings + self.pos_embedding(positions).unsqueeze(0)
+
+        # Transformer blocks
+        for block in self.transformer_blocks:
+            x = block(x)
+
+        x = self.history_norm(x)
+
+        # Mean pooling
+        history_repr = x.mean(dim=1)
+
+        # Concatenate + MLP
         combined = torch.cat([history_repr, scalar_features], dim=-1)
-
-        # MLP projection
         embedding = self.mlp(combined)
+
         return F.normalize(embedding, p=2, dim=-1)
-    
