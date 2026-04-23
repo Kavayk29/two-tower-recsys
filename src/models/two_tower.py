@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,10 +15,11 @@ class TwoTowerModel(nn.Module):
         history_embed_dim: int,
         scalar_feature_dim: int,
         item_input_dim: int,
-        hidden_dims: List[int],
+        user_hidden_dims: List[int],
+        item_hidden_dims: List[int],
         embedding_dim: int,
         num_attention_heads: int = 4,
-        num_attention_layers: int = 2,
+        num_attention_layers: int = 3,
         max_history_len: int = 50,
         dropout: float = 0.2,
         temperature: float = 0.1,
@@ -32,7 +34,7 @@ class TwoTowerModel(nn.Module):
         self.user_tower = UserTower(
             history_embed_dim=history_embed_dim,
             scalar_feature_dim=scalar_feature_dim,
-            hidden_dims=hidden_dims,
+            hidden_dims=user_hidden_dims,
             embedding_dim=embedding_dim,
             num_attention_heads=num_attention_heads,
             num_attention_layers=num_attention_layers,
@@ -42,7 +44,7 @@ class TwoTowerModel(nn.Module):
 
         self.item_tower = ItemTower(
             input_dim=item_input_dim,
-            hidden_dims=hidden_dims,
+            hidden_dims=item_hidden_dims,  # now uses its own dims
             embedding_dim=embedding_dim,
             dropout=dropout
         )
@@ -54,7 +56,6 @@ class TwoTowerModel(nn.Module):
         item_features: torch.Tensor,
         item_sampling_probs: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-
         user_embeddings = self.user_tower(history_embeddings, scalar_features)
         item_embeddings = self.item_tower(item_features)
 

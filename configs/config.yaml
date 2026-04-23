@@ -13,18 +13,20 @@ features:
   max_history_len: 50
 
 model:
-  embedding_dim: 128
-  user_hidden_dims: [256, 128]
-  item_hidden_dims: [256, 128]
+  embedding_dim: 256
+  user_hidden_dims: [512, 256]
+  item_hidden_dims: [512, 256]
   dropout: 0.2
   temperature: 0.1
   attention_heads: 4
-  attention_layers: 2
+  attention_layers: 3
+
 training:
   batch_size: 256
-  epochs: 50
-  learning_rate: 0.001
+  epochs: 100
+  learning_rate: 0.0005
   weight_decay: 0.00001
+  warmup_epochs: 5
   num_workers: 0
   logq_correction: false
 

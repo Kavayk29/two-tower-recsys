@@ -1,3 +1,5 @@
+# src/training/dataset.py — Fix slow iloc, use numpy arrays
+
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
@@ -5,15 +7,6 @@ import numpy as np
 
 
 class InteractionDataset(Dataset):
-    """
-    Each sample: one positive (user, item) interaction.
-
-    Returns:
-        - history_embeddings: (max_history_len, history_embed_dim)
-        - scalar_features: (scalar_dim,)
-        - item_features: (item_dim,)
-        - sampling_prob: float — for logQ correction
-    """
 
     def __init__(
         self,
@@ -29,32 +22,31 @@ class InteractionDataset(Dataset):
         valid_users = set(user_features["userId"].values)
         valid_items = set(item_features["movieId"].values)
 
-        self.interactions = interactions[
+        interactions = interactions[
             interactions["userId"].isin(valid_users) &
             interactions["movieId"].isin(valid_items)
         ].reset_index(drop=True)
 
-        print(f"Dataset: {len(self.interactions):,} valid interactions")
+        print(f"Dataset: {len(interactions):,} valid interactions")
+
+        # Store as numpy arrays — iloc on DataFrame is O(n), array lookup is O(1)
+        self.user_ids = interactions["userId"].values
+        self.movie_ids = interactions["movieId"].values
 
         self.user_features = user_features.set_index("userId")
         self.item_features = item_features.set_index("movieId")
 
         all_user_cols = [c for c in user_features.columns if c != "userId"]
 
-        # Full history stored as single flattened column
         self.hist_col = "user_history_embs"
-
-        # Scalar features: everything except history embeddings
-        self.scalar_cols = [
-            c for c in all_user_cols if c != self.hist_col
-        ]
+        self.scalar_cols = [c for c in all_user_cols if c != self.hist_col]
 
         self.item_feat_cols = [
             c for c in item_features.columns
             if c not in ["movieId", "year"]
         ]
 
-        item_counts = self.interactions["movieId"].value_counts()
+        item_counts = pd.Series(self.movie_ids).value_counts()
         total = item_counts.sum()
         self.item_sampling_probs = (item_counts / total).to_dict()
 
@@ -63,21 +55,20 @@ class InteractionDataset(Dataset):
         print(f" History shape:    ({max_history_len}, {history_embed_dim})")
 
     def __len__(self) -> int:
-        return len(self.interactions)
+        return len(self.user_ids)
 
     def __getitem__(self, idx: int):
-        row = self.interactions.iloc[idx]
-        user_id = row["userId"]
-        movie_id = row["movieId"]
+        user_id = self.user_ids[idx]
+        movie_id = self.movie_ids[idx]
 
-        # History: reshape flat list → (max_history_len, history_embed_dim)
         hist_flat = np.array(
             self.user_features.loc[user_id, self.hist_col],
             dtype=np.float32
         )
 
         hist_tensor = torch.tensor(hist_flat).reshape(
-            self.max_history_len, self.history_embed_dim
+            self.max_history_len,
+            self.history_embed_dim
         )
 
         scalar = self.user_features.loc[

@@ -1,6 +1,9 @@
+# src/training/trainer.py — AdamW + warmup scheduler + pass item_hidden_dims
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -37,7 +40,6 @@ def train_one_epoch(
     num_batches = 0
 
     pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
-
     for hist, scalar, item_feat, sampling_probs in pbar:
         hist = hist.to(device)
         scalar = scalar.to(device)
@@ -101,13 +103,17 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     max_history_len = config["features"]["max_history_len"]
 
     train_dataset = InteractionDataset(
-        train_interactions, user_features, item_features,
+        train_interactions,
+        user_features,
+        item_features,
         history_embed_dim=history_embed_dim,
         max_history_len=max_history_len
     )
 
     val_dataset = InteractionDataset(
-        val_interactions, user_features, item_features,
+        val_interactions,
+        user_features,
+        item_features,
         history_embed_dim=history_embed_dim,
         max_history_len=max_history_len
     )
@@ -146,15 +152,16 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     )
 
     with mlflow.start_run(run_name=run_name):
-
         mlflow.log_params({
             "embedding_dim": config["model"]["embedding_dim"],
-            "hidden_dims": str(config["model"]["user_hidden_dims"]),
+            "user_hidden_dims": str(config["model"]["user_hidden_dims"]),
+            "item_hidden_dims": str(config["model"]["item_hidden_dims"]),
             "attention_heads": config["model"]["attention_heads"],
             "attention_layers": config["model"]["attention_layers"],
             "dropout": config["model"]["dropout"],
             "temperature": config["model"]["temperature"],
             "learning_rate": config["training"]["learning_rate"],
+            "warmup_epochs": config["training"]["warmup_epochs"],
             "batch_size": config["training"]["batch_size"],
             "epochs": config["training"]["epochs"],
             "logq_correction": config["training"]["logq_correction"],
@@ -170,7 +177,8 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             history_embed_dim=history_embed_dim,
             scalar_feature_dim=scalar_dim,
             item_input_dim=item_dim,
-            hidden_dims=config["model"]["user_hidden_dims"],
+            user_hidden_dims=config["model"]["user_hidden_dims"],
+            item_hidden_dims=config["model"]["item_hidden_dims"],
             embedding_dim=config["model"]["embedding_dim"],
             num_attention_heads=config["model"]["attention_heads"],
             num_attention_layers=config["model"]["attention_layers"],
@@ -180,14 +188,33 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             logq_correction=config["training"]["logq_correction"]
         ).to(device)
 
-        optimizer = torch.optim.Adam(
+        # AdamW: applies weight decay correctly unlike Adam
+        optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config["training"]["learning_rate"],
             weight_decay=config["training"]["weight_decay"]
         )
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config["training"]["epochs"]
+        # Warmup + cosine decay
+        warmup_epochs = config["training"]["warmup_epochs"]
+        cosine_epochs = config["training"]["epochs"] - warmup_epochs
+
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=0.1,
+            end_factor=1.0,
+            total_iters=warmup_epochs
+        )
+
+        cosine_scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=cosine_epochs
+        )
+
+        scheduler = SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs]
         )
 
         best_ndcg = 0.0
