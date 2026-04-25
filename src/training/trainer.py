@@ -129,7 +129,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     val_loader = DataLoader(
         val_dataset,
         batch_size=config["training"]["batch_size"],
-        shuffle=False,
+        shuffle=True,
         num_workers=0
     )
 

@@ -1,3 +1,5 @@
+from random import random
+
 import torch
 import numpy as np
 import pandas as pd
@@ -70,11 +72,8 @@ def evaluate_model(
         .apply(set)
         .to_dict()
     )
-
-    val_users = [
-        u for u in list(user_val_items.keys())
-        if u in user_feat_idx.index
-    ][:max_users]
+    eligible = [u for u in user_val_items.keys() if u in user_feat_idx.index]
+    val_users = random.sample(eligible, min(max_users, len(eligible)))
 
     if not val_users:
         print(" No valid users found, skipping evaluation.")
@@ -117,7 +116,7 @@ def evaluate_model(
             metrics[f"hit_rate_at_{k}"].append(
                 compute_hit_rate_at_k(relevant, ranked, k)
             )
-
+    model.train()
     return {
         key: float(np.mean(vals))
         for key, vals in metrics.items()

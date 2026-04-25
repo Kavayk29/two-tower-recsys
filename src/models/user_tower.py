@@ -28,11 +28,11 @@ class TransformerBlock(nn.Module):
         seq_len = x.shape[1]
 
         # Causal mask: position i cannot attend to position j > i
-        causal_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=x.device), diagonal=1
-        ).bool()
+        # causal_mask = torch.triu(
+        #     torch.ones(seq_len, seq_len, device=x.device), diagonal=1
+        # ).bool()
 
-        attended, _ = self.attention(x, x, x, attn_mask=causal_mask)
+        attended, _ = self.attention(x, x, x)
         x = self.norm1(x + self.dropout(attended))
         x = self.norm2(x + self.ffn(x))
         return x
@@ -83,11 +83,7 @@ class UserTower(nn.Module):
         layers.append(nn.Linear(prev_dim, embedding_dim))
         self.mlp = nn.Sequential(*layers)
 
-    def forward(
-        self,
-        history_embeddings: torch.Tensor,
-        scalar_features: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, history_embeddings, scalar_features):
         batch_size, seq_len, _ = history_embeddings.shape
 
         positions = torch.arange(seq_len, device=history_embeddings.device)
@@ -98,13 +94,14 @@ class UserTower(nn.Module):
 
         x = self.history_norm(x)
 
-        # Last position (causal attention → richest representation)
-        history_repr = x[:, -1, :]  # (batch, history_embed_dim)
+        # Mean pool over real (non-padding) positions only
+        # Left-padded: zero rows = padding, non-zero rows = real movies
+        real_mask = (history_embeddings.abs().sum(dim=-1) > 0)  # (batch, seq_len)
+        real_mask_f = real_mask.unsqueeze(-1).float()       # (batch, seq_len, 1)
+        num_real = real_mask_f.sum(dim=1).clamp(min=1)      # (batch, 1)
+        history_repr = (x * real_mask_f).sum(dim=1) / num_real  # (batch, 384)
 
-        # Normalize scalar features before concatenation
         scalar_features = self.scalar_norm(scalar_features)
-
         combined = torch.cat([history_repr, scalar_features], dim=-1)
         embedding = self.mlp(combined)
-
         return F.normalize(embedding, p=2, dim=-1)
