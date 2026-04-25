@@ -1,4 +1,4 @@
-from random import random
+import random
 
 import torch
 import numpy as np
