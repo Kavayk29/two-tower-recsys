@@ -24,7 +24,7 @@ class TransformerBlock(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, src_key_padding_mask = None) -> torch.Tensor:
         seq_len = x.shape[1]
 
         # Causal mask: position i cannot attend to position j > i
@@ -32,7 +32,7 @@ class TransformerBlock(nn.Module):
             torch.ones(seq_len, seq_len, device=x.device), diagonal=1
         ).bool()
 
-        attended, _ = self.attention(x, x, x, attn_mask=causal_mask,key_padding_mask=key_padding_mask)
+        attended, _ = self.attention(x, x, x, attn_mask=causal_mask,key_padding_mask=src_key_padding_mask)
         x = self.norm1(x + self.dropout(attended))
         x = self.norm2(x + self.ffn(x))
         return x
