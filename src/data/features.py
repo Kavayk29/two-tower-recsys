@@ -40,7 +40,7 @@ def build_item_features(
         print(" Using TMDB-enriched text (title + overview + cast + director)")
     else:
         text_col = "title_clean"
-        print(" Using title only (run TMDB enrichment for richer features)")
+        print(" Using title only ")
 
     for genre in ALL_GENRES:
         col = f"genre_{genre.lower().replace('-', '_')}"
@@ -183,7 +183,7 @@ def build_user_features(
         padded = np.zeros((max_history_len, embed_dim), dtype=np.float32)
 
         actual_len = min(len(history_embeds), max_history_len)
-        padded[:actual_len] = history_embeds[-actual_len:]
+        padded[-actual_len:] = history_embeds[-actual_len:]
 
         history_flat = padded.flatten().tolist()
 

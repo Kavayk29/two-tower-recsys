@@ -32,7 +32,7 @@ class TransformerBlock(nn.Module):
             torch.ones(seq_len, seq_len, device=x.device), diagonal=1
         ).bool()
 
-        attended, _ = self.attention(x, x, x, attn_mask=causal_mask)
+        attended, _ = self.attention(x, x, x, attn_mask=causal_mask,key_padding_mask=key_padding_mask)
         x = self.norm1(x + self.dropout(attended))
         x = self.norm2(x + self.ffn(x))
         return x
@@ -90,11 +90,12 @@ class UserTower(nn.Module):
     ) -> torch.Tensor:
         batch_size, seq_len, _ = history_embeddings.shape
 
+        padding_mask = (history_embeddings.abs().sum(dim=-1) == 0)  # (batch, seq_len)
         positions = torch.arange(seq_len, device=history_embeddings.device)
         x = history_embeddings + self.pos_embedding(positions).unsqueeze(0)
 
         for block in self.transformer_blocks:
-            x = block(x)
+            x = block(x, key_padding_mask=padding_mask)
 
         x = self.history_norm(x)
 
