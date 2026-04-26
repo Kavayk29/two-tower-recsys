@@ -6,7 +6,7 @@ from pathlib import Path
 from src.models.two_tower import TwoTowerModel
 from src.retrieval.faiss_index import build_and_save_index
 import yaml
-
+import os
 
 def load_config(config_path: str = "configs/config.yaml") -> dict:
     with open(config_path, "r") as f:
@@ -15,7 +15,9 @@ def load_config(config_path: str = "configs/config.yaml") -> dict:
 
 def main():
     config = load_config()
-    processed_dir = Path(config["data"]["processed_dir"])
+    base = "kaggle/working" if os.path.exists("/kaggle/working") else "."
+    artifacts_dir = Path(base) / "artifacts"
+    processed_dir = Path(base)/"data"/"processed"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -51,21 +53,23 @@ def main():
     )
 
     model.load_state_dict(
-        torch.load("artifacts/best_model.pt", map_location=device)
+        torch.load(artifacts_dir / "best_model.pt", map_location=device)
     )
 
     model.to(device)
     model.eval()
+    print("model loaded successfully")
 
     build_and_save_index(
         model=model,
         item_features=item_features,
-        save_dir=Path("artifacts"),
+        save_dir=artifacts_dir,
         device=device,
         index_type=config["retrieval"]["faiss_index_type"],
         nlist=config["retrieval"]["nlist"],
         nprobe=config["retrieval"]["nprobe"]
     )
+    print(f"Index built and saved to {artifacts_dir}")
 
 
 if __name__ == "__main__":

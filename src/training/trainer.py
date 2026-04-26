@@ -1,5 +1,7 @@
 # src/training/trainer.py — AdamW + warmup scheduler + pass item_hidden_dims
 
+import os
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -87,8 +89,8 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     config = load_config(config_path)
 
     processed_dir = Path(config["data"]["processed_dir"])
-    artifacts_dir = Path("artifacts")
-    artifacts_dir.mkdir(exist_ok=True)
+    artifacts_dir = Path("/kaggle/working/artifacts") if os.path.exists("/kaggle/working") else Path("artifacts_dir")
+    artifacts_dir.mkdir(parents=True,exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
