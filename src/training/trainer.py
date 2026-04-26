@@ -217,7 +217,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             milestones=[warmup_epochs]
         )
 
-        best_ndcg = 0.0
+        best_hit_at_10 = 0.0
         best_model_path = artifacts_dir / "best_model.pt"
 
         for epoch in range(1, config["training"]["epochs"] + 1):
@@ -274,12 +274,12 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             for k, v in val_metrics.items():
                 print(f" {k}: {v:.4f}")
 
-            if val_metrics.get("ndcg_at_10", 0) > best_ndcg:
-                best_ndcg = val_metrics["ndcg_at_10"]
+            if val_metrics.get("hit_rate_at_10", 0) > best_hit_at_10:
+                best_hit_at_10 = val_metrics["hit_rate_at_10"]
                 torch.save(model.state_dict(), best_model_path)
-                print(f" New best NDCG@10: {best_ndcg:.4f} — saved")
+                print(f" New best HIT@10: {best_hit_at_10:.4f} — saved")
 
-        mlflow.log_metric("best_ndcg_at_10", best_ndcg)
+        mlflow.log_metric("best_hit_rate_at_10", best_hit_at_10)
         mlflow.log_artifact(str(best_model_path))
 
         if MLFLOW_PYTORCH_AVAILABLE:
@@ -289,7 +289,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
                 registered_model_name="TwoTowerRetriever"
             )
 
-        print(f"\nTraining complete. Best NDCG@10: {best_ndcg:.4f}")
+        print(f"\nTraining complete. Best HIT@10: {best_hit_at_10:.4f}")
 
 
 if __name__ == "__main__":
