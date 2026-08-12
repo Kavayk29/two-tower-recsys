@@ -1,3 +1,12 @@
+"""
+Place at: src/training/evaluate.py
+
+Change vs. original: added compute_recall_at_k and recall_at_k to the
+returned metrics. hit_rate_at_k is binary (did ANY relevant item appear
+in top-k); recall_at_k is the actual fraction of a user's relevant items
+retrieved in top-k -- the metric your resume/README report (Recall@50).
+"""
+
 import random
 
 import torch
@@ -25,6 +34,14 @@ def compute_hit_rate_at_k(relevant: set, ranked: list, k: int) -> float:
     return float(bool(set(ranked[:k]) & relevant))
 
 
+def compute_recall_at_k(relevant: set, ranked: list, k: int) -> float:
+    """Fraction of a user's relevant (held-out) items retrieved in top-k."""
+    if not relevant:
+        return 0.0
+    hits = len(set(ranked[:k]) & relevant)
+    return hits / len(relevant)
+
+
 def evaluate_model(
     model,
     val_interactions: pd.DataFrame,
@@ -34,7 +51,8 @@ def evaluate_model(
     history_embed_dim: int = 384,
     max_history_len: int = 50,
     k_values: list = [10, 50],
-    max_users: int = 300
+    max_users: int = 300,
+    item_feat_cols: list = None,
 ) -> Dict[str, float]:
 
     model.eval()
@@ -44,10 +62,11 @@ def evaluate_model(
         if c not in ["userId", "user_history_embs"]
     ]
 
-    item_feat_cols = [
-        c for c in item_features.columns
-        if c not in ["movieId", "year"]
-    ]
+    if item_feat_cols is None:
+        item_feat_cols = [
+            c for c in item_features.columns
+            if c not in ["movieId", "year"]
+        ]
 
     user_feat_idx = user_features.set_index("userId")
     item_feat_idx = item_features.set_index("movieId")
@@ -75,15 +94,17 @@ def evaluate_model(
     eligible = [u for u in user_val_items.keys() if u in user_feat_idx.index]
     val_users = random.sample(eligible, min(max_users, len(eligible)))
 
+    metric_names = (
+        [f"ndcg_at_{k}" for k in k_values]
+        + [f"hit_rate_at_{k}" for k in k_values]
+        + [f"recall_at_{k}" for k in k_values]
+    )
+
     if not val_users:
         print(" No valid users found, skipping evaluation.")
-        return (
-            {f"ndcg_at_{k}": 0.0 for k in k_values} |
-            {f"hit_rate_at_{k}": 0.0 for k in k_values}
-        )
+        return {name: 0.0 for name in metric_names}
 
-    metrics = {f"ndcg_at_{k}": [] for k in k_values}
-    metrics.update({f"hit_rate_at_{k}": [] for k in k_values})
+    metrics = {name: [] for name in metric_names}
 
     for user_id in val_users:
 
@@ -115,6 +136,9 @@ def evaluate_model(
             )
             metrics[f"hit_rate_at_{k}"].append(
                 compute_hit_rate_at_k(relevant, ranked, k)
+            )
+            metrics[f"recall_at_{k}"].append(
+                compute_recall_at_k(relevant, ranked, k)
             )
     model.train()
     return {

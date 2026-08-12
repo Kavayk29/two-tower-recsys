@@ -1,12 +1,20 @@
 # build_index.py — Pass item_hidden_dims separately
+#
+# Change vs. original: artifacts_dir now resolved via
+# src.utils.get_artifacts_dir(), matching trainer.py exactly (previously
+# the Kaggle-path logic here used a relative "kaggle/working" string that,
+# combined with a cwd already at /kaggle/working, resolved to a doubled
+# /kaggle/working/kaggle/working/artifacts path -- never where trainer.py
+# actually saved the model).
 
 import torch
 import pandas as pd
 from pathlib import Path
 from src.models.two_tower import TwoTowerModel
 from src.retrieval.faiss_index import build_and_save_index
+from src.utils import get_artifacts_dir
 import yaml
-import os
+
 
 def load_config(config_path: str = "configs/config.yaml") -> dict:
     with open(config_path, "r") as f:
@@ -15,9 +23,8 @@ def load_config(config_path: str = "configs/config.yaml") -> dict:
 
 def main():
     config = load_config()
-    base = "kaggle/working" if os.path.exists("/kaggle/working") else "."
-    artifacts_dir = Path(base) / "artifacts"
-    processed_dir = Path(base)/"data"/"processed"
+    artifacts_dir = get_artifacts_dir(config)
+    processed_dir = Path(config["data"]["processed_dir"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -52,9 +59,14 @@ def main():
         logq_correction=False
     )
 
-    model.load_state_dict(
-        torch.load(artifacts_dir / "best_model.pt", map_location=device)
-    )
+    model_path = artifacts_dir / "best_model.pt"
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"No checkpoint found at {model_path.resolve()}. "
+            "Run training (src.training.trainer) first."
+        )
+
+    model.load_state_dict(torch.load(model_path, map_location=device))
 
     model.to(device)
     model.eval()

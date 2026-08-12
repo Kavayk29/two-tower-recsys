@@ -1,4 +1,16 @@
-# src/training/trainer.py — AdamW + warmup scheduler + pass item_hidden_dims
+# src/training/trainer.py
+#
+# Changes vs. previous version:
+#   1. setup_mlflow_tracking(): tries the remote DagsHub tracking URI from
+#      config.yaml; if auth/network fails (e.g. the 403 you hit — missing
+#      MLFLOW_TRACKING_USERNAME/PASSWORD for a fresh machine), falls back
+#      to local file-based tracking at ./mlruns instead of crashing the
+#      whole run.
+#   2. Best-checkpoint selection now uses recall_at_50 (matches the metric
+#      you actually want to track) instead of hit_rate_at_10.
+#   3. mlflow.log_metrics / log_artifact / pytorch.log_model calls are
+#      wrapped so a later transient tracking failure can't kill an
+#      in-progress multi-epoch run.
 
 import os
 
@@ -17,6 +29,7 @@ import time
 from src.models.two_tower import TwoTowerModel
 from src.training.dataset import InteractionDataset
 from src.training.evaluate import evaluate_model
+from src.utils import get_artifacts_dir
 
 try:
     import mlflow.pytorch
@@ -28,6 +41,68 @@ except ImportError:
 def load_config(config_path: str = "configs/config.yaml") -> dict:
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def setup_mlflow_tracking(config: dict) -> None:
+    """
+    Try the remote (DagsHub) tracking URI from config.yaml. If it's
+    unreachable or unauthenticated, fall back to local file-based
+    tracking instead of letting the whole training run crash on a
+    tracking-server problem.
+    """
+    remote_uri = config["mlflow"]["tracking_uri"]
+    experiment_name = config["mlflow"]["experiment_name"]
+
+    try:
+        mlflow.set_tracking_uri(remote_uri)
+        mlflow.set_experiment(experiment_name)
+        # Cheap call that actually exercises auth, so we find out now
+        # rather than mid-training.
+        mlflow.search_experiments(max_results=1)
+        print(f"MLflow tracking -> remote: {remote_uri}")
+        return
+    except Exception as e:
+        print(f"Could not use remote MLflow tracking ({remote_uri}): {e}")
+        print(
+            "Falling back to local tracking at ./mlflow.db (sqlite). To "
+            "use the hosted DagsHub tracker, set MLFLOW_TRACKING_USERNAME "
+            "(your DagsHub username) and MLFLOW_TRACKING_PASSWORD "
+            "(a DagsHub access token, from Settings -> Tokens) as "
+            "environment variables and rerun."
+        )
+        # Plain "file:./mlruns" is maintenance-mode-only on current MLflow
+        # versions and raises unless MLFLOW_ALLOW_FILE_STORE=true is set.
+        # sqlite is the supported local backend and needs no extra flags.
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+        mlflow.set_experiment(experiment_name)
+
+
+def safe_log_metrics(log_dict: dict, step: int) -> None:
+    try:
+        mlflow.log_metrics(log_dict, step=step)
+    except Exception as e:
+        print(f" [mlflow] log_metrics failed, continuing without it: {e}")
+
+
+def safe_log_artifact(path: str) -> None:
+    try:
+        mlflow.log_artifact(path)
+    except Exception as e:
+        print(f" [mlflow] log_artifact failed, continuing without it: {e}")
+
+
+def safe_log_model(model) -> None:
+    if not MLFLOW_PYTORCH_AVAILABLE:
+        return
+    try:
+        mlflow.pytorch.log_model(
+            model, "two-tower-model", registered_model_name="TwoTowerRetriever"
+        )
+    except Exception as e:
+        # Model Registry needs a database-backed store; the local file
+        # fallback above doesn't support it, so this is expected to skip
+        # when running locally. Not fatal either way.
+        print(f" [mlflow] log_model/registry failed, continuing without it: {e}")
 
 
 def train_one_epoch(
@@ -89,11 +164,11 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     config = load_config(config_path)
 
     processed_dir = Path(config["data"]["processed_dir"])
-    artifacts_dir = Path("/kaggle/working/artifacts") if os.path.exists("/kaggle/working") else Path("artifacts_dir")
-    artifacts_dir.mkdir(parents=True,exist_ok=True)
+    artifacts_dir = get_artifacts_dir(config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
+    print(f"Artifacts will be saved to: {artifacts_dir.resolve()}")
 
     print("Loading data...")
     train_interactions = pd.read_parquet(processed_dir / "train_interactions.parquet")
@@ -109,7 +184,8 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
         user_features,
         item_features,
         history_embed_dim=history_embed_dim,
-        max_history_len=max_history_len
+        max_history_len=max_history_len,
+        causal=True,
     )
 
     val_dataset = InteractionDataset(
@@ -117,7 +193,8 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
         user_features,
         item_features,
         history_embed_dim=history_embed_dim,
-        max_history_len=max_history_len
+        max_history_len=max_history_len,
+        causal=False,
     )
 
     train_loader = DataLoader(
@@ -142,8 +219,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
     print(f"Scalar feature dim: {scalar_dim}")
     print(f"Item feature dim:  {item_dim}")
 
-    mlflow.set_tracking_uri(config["mlflow"]["tracking_uri"])
-    mlflow.set_experiment(config["mlflow"]["experiment_name"])
+    setup_mlflow_tracking(config)
 
     run_name = (
         f"emb{config['model']['embedding_dim']}"
@@ -151,6 +227,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
         f"_bs{config['training']['batch_size']}"
         f"_attn{config['model']['attention_heads']}x{config['model']['attention_layers']}"
         f"_temp{config['model']['temperature']}"
+        f"_causal-fix"
     )
 
     with mlflow.start_run(run_name=run_name):
@@ -172,7 +249,9 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             "scalar_dim": scalar_dim,
             "item_dim": item_dim,
             "train_size": len(train_interactions),
-            "device": str(device)
+            "device": str(device),
+            "causal_training_history": True,
+            "checkpoint_metric": "recall_at_50",
         })
 
         model = TwoTowerModel(
@@ -190,14 +269,12 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             logq_correction=config["training"]["logq_correction"]
         ).to(device)
 
-        # AdamW: applies weight decay correctly unlike Adam
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=config["training"]["learning_rate"],
             weight_decay=config["training"]["weight_decay"]
         )
 
-        # Warmup + cosine decay
         warmup_epochs = config["training"]["warmup_epochs"]
         cosine_epochs = config["training"]["epochs"] - warmup_epochs
 
@@ -219,7 +296,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             milestones=[warmup_epochs]
         )
 
-        best_hit_at_10 = 0.0
+        best_recall_at_50 = 0.0
         best_model_path = artifacts_dir / "best_model.pt"
 
         for epoch in range(1, config["training"]["epochs"] + 1):
@@ -266,7 +343,7 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
                 if not (isinstance(v, float) and np.isnan(v))
             }
 
-            mlflow.log_metrics(log_dict, step=epoch)
+            safe_log_metrics(log_dict, step=epoch)
 
             print(f"Epoch {epoch:02d} | train_loss: {train_loss:.4f} | {elapsed:.1f}s")
 
@@ -276,22 +353,16 @@ def run_training(config_path: str = "configs/config.yaml") -> None:
             for k, v in val_metrics.items():
                 print(f" {k}: {v:.4f}")
 
-            if val_metrics.get("hit_rate_at_10", 0) > best_hit_at_10:
-                best_hit_at_10 = val_metrics["hit_rate_at_10"]
+            if val_metrics.get("recall_at_50", 0) > best_recall_at_50:
+                best_recall_at_50 = val_metrics["recall_at_50"]
                 torch.save(model.state_dict(), best_model_path)
-                print(f" New best HIT@10: {best_hit_at_10:.4f} — saved")
+                print(f" New best Recall@50: {best_recall_at_50:.4f} - saved")
 
-        mlflow.log_metric("best_hit_rate_at_10", best_hit_at_10)
-        mlflow.log_artifact(str(best_model_path))
+        safe_log_metrics({"best_recall_at_50": best_recall_at_50}, step=config["training"]["epochs"])
+        safe_log_artifact(str(best_model_path))
+        safe_log_model(model)
 
-        if MLFLOW_PYTORCH_AVAILABLE:
-            mlflow.pytorch.log_model(
-                model,
-                "two-tower-model",
-                registered_model_name="TwoTowerRetriever"
-            )
-
-        print(f"\nTraining complete. Best HIT@10: {best_hit_at_10:.4f}")
+        print(f"\nTraining complete. Best Recall@50: {best_recall_at_50:.4f}")
 
 
 if __name__ == "__main__":

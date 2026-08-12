@@ -38,7 +38,7 @@ retrieval:
 
 mlflow:
   experiment_name: "two-tower-recsys"
-  tracking_uri: "https://dagshub.com/Kavayk29/two-tower-recsys.mlflow"
+  tracking_uri: "sqlite:///mlflow.db"
 
 serving:
   host: "0.0.0.0"
