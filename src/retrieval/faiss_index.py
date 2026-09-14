@@ -109,4 +109,10 @@ def retrieve_top_k(
     )
 
     _, indices = index.search(query, k)
-    return movie_ids[indices[0]].tolist()
+    hits = indices[0]
+    # IVF search pads with -1 when fewer than k candidates are found in the
+    # probed clusters (e.g. nprobe/nlist too small, or a small catalog) --
+    # indexing movie_ids with -1 would silently return the LAST item in the
+    # array as a fake match, so drop those slots instead.
+    hits = hits[hits >= 0]
+    return movie_ids[hits].tolist()

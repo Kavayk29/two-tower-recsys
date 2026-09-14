@@ -53,6 +53,7 @@ def evaluate_model(
     k_values: list = [10, 50],
     max_users: int = 300,
     item_feat_cols: list = None,
+    seed: int = 42,
 ) -> Dict[str, float]:
 
     model.eval()
@@ -92,7 +93,9 @@ def evaluate_model(
         .to_dict()
     )
     eligible = [u for u in user_val_items.keys() if u in user_feat_idx.index]
-    val_users = random.sample(eligible, min(max_users, len(eligible)))
+    # Sorted before sampling so the sample is reproducible across runs
+    # given the same seed, independent of dict/groupby iteration order.
+    val_users = random.Random(seed).sample(sorted(eligible), min(max_users, len(eligible)))
 
     metric_names = (
         [f"ndcg_at_{k}" for k in k_values]

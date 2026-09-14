@@ -82,8 +82,8 @@ def causal_train_recall(
     df["row_idx"] = np.arange(len(df))
     last_rows = df.groupby("user_id").tail(1)
 
-    eligible_users = last_rows["user_id"].unique().tolist()
-    sampled_users = random.sample(
+    eligible_users = sorted(last_rows["user_id"].unique().tolist())
+    sampled_users = random.Random(42).sample(
         eligible_users, min(max_users, len(eligible_users))
     )
     last_rows = last_rows[last_rows["user_id"].isin(sampled_users)]

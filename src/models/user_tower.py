@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List
+from typing import List, Optional
 
 
 class TransformerBlock(nn.Module):
@@ -24,15 +24,11 @@ class TransformerBlock(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        seq_len = x.shape[1]
-
-        # Causal mask: position i cannot attend to position j > i
-        # causal_mask = torch.triu(
-        #     torch.ones(seq_len, seq_len, device=x.device), diagonal=1
-        # ).bool()
-
-        attended, _ = self.attention(x, x, x)
+    def forward(self, x: torch.Tensor, key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # key_padding_mask: (batch, seq_len), True at PADDING positions
+        # (nn.MultiheadAttention convention) so padded rows never
+        # contribute to, or receive, attention.
+        attended, _ = self.attention(x, x, x, key_padding_mask=key_padding_mask)
         x = self.norm1(x + self.dropout(attended))
         x = self.norm2(x + self.ffn(x))
         return x
@@ -86,17 +82,28 @@ class UserTower(nn.Module):
     def forward(self, history_embeddings, scalar_features):
         batch_size, seq_len, _ = history_embeddings.shape
 
+        # Left-padded: zero rows = padding, non-zero rows = real movies
+        real_mask = (history_embeddings.abs().sum(dim=-1) > 0)  # (batch, seq_len)
+
+        # nn.MultiheadAttention requires at least one unmasked key per row,
+        # and errors if a whole row is masked. A user with zero history has
+        # every position padded, so temporarily unmask those rows for the
+        # attention pass -- they still contribute nothing at pooling time
+        # below (num_real is clamped to >=1, and history_repr divides by
+        # that), so the extra attention over all-zero rows is discarded.
+        fully_padded = ~real_mask.any(dim=1)  # (batch,)
+        attend_mask = ~real_mask
+        attend_mask[fully_padded] = False
+
         positions = torch.arange(seq_len, device=history_embeddings.device)
         x = history_embeddings + self.pos_embedding(positions).unsqueeze(0)
 
         for block in self.transformer_blocks:
-            x = block(x)
+            x = block(x, key_padding_mask=attend_mask)
 
         x = self.history_norm(x)
 
         # Mean pool over real (non-padding) positions only
-        # Left-padded: zero rows = padding, non-zero rows = real movies
-        real_mask = (history_embeddings.abs().sum(dim=-1) > 0)  # (batch, seq_len)
         real_mask_f = real_mask.unsqueeze(-1).float()       # (batch, seq_len, 1)
         num_real = real_mask_f.sum(dim=1).clamp(min=1)      # (batch, 1)
         history_repr = (x * real_mask_f).sum(dim=1) / num_real  # (batch, 384)
