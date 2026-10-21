@@ -1,11 +1,6 @@
 """
-Place at: src/utils.py
-
 Single source of truth for where model artifacts (checkpoints, FAISS
-index) live. Both trainer.py and build_index.py previously computed this
-path independently and disagreed (one used "artifacts_dir", the other
-"artifacts" -- and the Kaggle branches didn't match either), so
-build_index.py silently couldn't find what trainer.py had just saved.
+index) live, shared by trainer.py and build_index.py.
 """
 
 import os

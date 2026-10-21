@@ -1,6 +1,4 @@
 """
-Place at: check_train_fit.py (repo root)
-
 Diagnostic-only script. Loads the current best checkpoint and computes
 recall@k on a TRAIN-set leave-one-out probe using the SAME causal history
 construction training used (via InteractionDataset(causal=True)), so it's
@@ -13,7 +11,7 @@ as a single held-out probe item; build history from everything strictly
 before it (identical to what training saw for that row); rank the full
 catalog; check if the probe item lands in top-k. This is a standard
 leave-one-out eval used across recsys literature (e.g. NCF), and it's
-the fairest apples-to-apples read against your val recall.
+a fair apples-to-apples read against validation recall.
 
 Run while training is still going, ideally on CPU to avoid GPU
 contention with the training process:

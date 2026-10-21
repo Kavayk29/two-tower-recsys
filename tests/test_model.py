@@ -1,6 +1,4 @@
 """
-Place at: tests/test_model.py
-
 Pure shape/forward-pass tests -- no data files or downloads needed.
 Run with: pytest tests/test_model.py -v
 """

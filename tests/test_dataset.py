@@ -1,6 +1,4 @@
 """
-Place at: tests/test_dataset.py
-
 Regression test for the training-time leakage bug: with causal=True,
 each training example's history must contain ONLY interactions strictly
 before it in that user's timeline, and must never include the target

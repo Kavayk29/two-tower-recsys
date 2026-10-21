@@ -1,6 +1,4 @@
 """
-Place at: src/serving/api.py
-
 Minimal FastAPI serving layer: loads the trained model, FAISS index, and
 feature tables once at startup, then exposes:
   GET /health              -> liveness/readiness check

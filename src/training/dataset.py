@@ -1,12 +1,9 @@
 """
-Place at: src/training/dataset.py
-
-Fixes vs. the original version:
+Leakage-safe training dataset:
 
 1. Training examples use a CAUSAL, leave-one-out SEQUENCE history (only
    interactions strictly before the target interaction, per user)
-   instead of reusing the same static full-history vector for every
-   training row of a given user.
+   rather than one static full-history vector per user.
 
 2. Training examples ALSO use causally-scoped SCALAR features now
    (genre affinity, activity level, recency) computed from the same

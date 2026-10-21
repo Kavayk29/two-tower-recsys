@@ -1,10 +1,8 @@
 """
-Place at: run_ablation.py (repo root)
-
 Trains a short comparison run with the item tower's text-embedding
 columns (item_text_emb_0..383) removed, leaving only genre/year/
 popularity features. Uses a SEPARATE artifacts folder and MLflow run
-name so it never touches your main training run or its checkpoint.
+name so it never touches the main training run or its checkpoint.
 
 This does NOT modify any existing files -- it's a standalone diagnostic.
 
@@ -71,7 +69,7 @@ def main():
     config = load_config()
     processed_dir = Path(config["data"]["processed_dir"])
 
-    # Separate artifacts dir per mode -- never overwrites your main run.
+    # Separate artifacts dir per mode -- never overwrites the main run.
     artifacts_dir = Path("artifacts") / f"ablation_{args.mode}"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 

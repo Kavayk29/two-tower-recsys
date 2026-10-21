@@ -1,10 +1,9 @@
 """
-Place at: src/training/evaluate.py
+Full-ranking evaluation: NDCG@k, HitRate@k, Recall@k and MRR.
 
-Change vs. original: added compute_recall_at_k and recall_at_k to the
-returned metrics. hit_rate_at_k is binary (did ANY relevant item appear
-in top-k); recall_at_k is the actual fraction of a user's relevant items
-retrieved in top-k -- the metric your resume/README report (Recall@50).
+hit_rate_at_k is binary (did ANY relevant item appear in top-k);
+recall_at_k is the fraction of a user's relevant items retrieved in
+top-k (the headline metric, Recall@50).
 """
 
 import random

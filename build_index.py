@@ -1,11 +1,6 @@
-# build_index.py — Pass item_hidden_dims separately
-#
-# Change vs. original: artifacts_dir now resolved via
-# src.utils.get_artifacts_dir(), matching trainer.py exactly (previously
-# the Kaggle-path logic here used a relative "kaggle/working" string that,
-# combined with a cwd already at /kaggle/working, resolved to a doubled
-# /kaggle/working/kaggle/working/artifacts path -- never where trainer.py
-# actually saved the model).
+# build_index.py: encode all items with the trained item tower and build
+# the FAISS index. Artifacts dir is resolved via src.utils.get_artifacts_dir()
+# so it always matches where trainer.py saved the model.
 
 import torch
 import pandas as pd

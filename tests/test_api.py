@@ -1,6 +1,4 @@
 """
-Place at: tests/test_api.py
-
 These tests bypass the real startup event (which needs a trained model +
 FAISS index on disk) and instead inject a lightweight fake state directly,
 so the API's request/response handling can be tested without artifacts.
